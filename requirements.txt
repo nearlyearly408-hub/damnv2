@@ -1,0 +1,7 @@
+flask
+gunicorn
+python-dotenv
+python-binance
+ta
+pandas
+requests
