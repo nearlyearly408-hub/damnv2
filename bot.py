@@ -4,10 +4,12 @@ Bot Scalping v20.1 — REVERSED LOGIC (CONTRARIAN) + TRAILING STOP
 - Entry direction inverted (LONG <-> SHORT)
 - Hard SL maksimal 0.4% dari entry (+ ~0.1% fee = ~0.5% max loss)
 - Trailing Stop TP:
-    * Aktif saat harga menyentuh +0.16% dari entry
-    * Trailing stop awal di-set ke +0.15% dari entry (profit lock-in)
-    * Ikut naik seiring harga naik: selalu 0.01% di bawah high tertinggi
-    * Tapi tidak pernah turun di bawah level lock-in minimum
+    * Aktif saat profit >= 0.16% dari entry
+    * Saat aktif: ts_price = harga_sekarang × (1 - 0.15%) untuk LONG
+                             harga_sekarang × (1 + 0.15%) untuk SHORT
+    * Setiap tick: ts_price diupdate dari harga terbaru - gap 0.15%
+    * ts_price hanya bergerak menguntungkan (naik/LONG, turun/SHORT)
+    * Tidak pernah mundur → profit terkunci terus naik
 """
 
 import os
@@ -47,9 +49,8 @@ MAX_SL_PCT   = 0.004   # Hard SL maksimal 0.4% dari entry
 MAX_TP_PCT   = 0.04
 
 # Trailing Stop Parameters
-TS_ACTIVATE_PCT  = 0.0016   # Trailing stop aktif saat profit >= 0.16%
-TS_LOCK_IN_PCT   = 0.0015   # Level lock-in minimal saat trailing aktif (0.15%)
-TS_TRAIL_GAP_PCT = 0.0001   # Trailing gap: stop selalu 0.01% di bawah high tertinggi
+TS_ACTIVATE_PCT = 0.0016   # Trailing stop aktif saat profit >= 0.16%
+TS_GAP_PCT      = 0.0015   # Stop selalu 0.15% di bawah harga saat ini (LONG) / di atas (SHORT)
 
 # Fee
 FEE_RATE = 0.0005           # 0.05% per leg, 0.1% round-trip
@@ -724,8 +725,7 @@ def live_open(orig_direction, score, sigs, price, atr, regime, bias, sym):
         "sl_price":       sl_price,
         # Trailing stop state
         "ts_active":      False,
-        "ts_price":       None,         # level trailing stop saat ini
-        "ts_peak":        price,        # harga terbaik yang pernah dicapai
+        "ts_price":       None,         # level trailing stop saat ini (hanya naik/turun ke arah profit)
         # Simpan tp_price original hanya untuk logging
         "tp_price_orig":  tp_price,
         "sl_pct":         sl_pct,
