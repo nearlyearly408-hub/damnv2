@@ -4,12 +4,12 @@ Bot Scalping v20.1 — REVERSED LOGIC (CONTRARIAN) + TRAILING STOP
 - Entry direction inverted (LONG <-> SHORT)
 - Hard SL maksimal 0.4% dari entry (+ ~0.1% fee = ~0.5% max loss)
 - Trailing Stop TP:
-    * Aktif saat profit >= 0.16% dari entry
-    * Saat aktif: ts_price = harga_sekarang × (1 - 0.15%) untuk LONG
-                             harga_sekarang × (1 + 0.15%) untuk SHORT
-    * Setiap tick: ts_price diupdate dari harga terbaru - gap 0.15%
-    * ts_price hanya bergerak menguntungkan (naik/LONG, turun/SHORT)
-    * Tidak pernah mundur → profit terkunci terus naik
+    * Aktif saat gross profit pertama kali >= 0.16% dari entry
+    * Saat aktif: ts_price = harga_saat_ini × (1 - 0.15%) untuk LONG
+                             harga_saat_ini × (1 + 0.15%) untuk SHORT
+    * Setiap tick: ts_price = px_sekarang - 0.15% (LONG) / px + 0.15% (SHORT)
+    * ts_price HANYA bergerak menguntungkan (naik/LONG, turun/SHORT), tidak pernah mundur
+    * Keluar saat harga menyentuh ts_price
 """
 
 import os
@@ -49,8 +49,9 @@ MAX_SL_PCT   = 0.004   # Hard SL maksimal 0.4% dari entry
 MAX_TP_PCT   = 0.04
 
 # Trailing Stop Parameters
-TS_ACTIVATE_PCT = 0.0016   # Trailing stop aktif saat profit >= 0.16%
-TS_GAP_PCT      = 0.0015   # Stop selalu 0.15% di bawah harga saat ini (LONG) / di atas (SHORT)
+TS_ACTIVATE_PCT = 0.0016   # Trailing stop aktif saat gross profit >= 0.16% dari entry
+TS_GAP_PCT      = 0.0015   # Stop selalu 0.15% dari harga saat ini: px*(1-0.15%) LONG / px*(1+0.15%) SHORT
+                            # ts_price hanya bergerak menguntungkan, tidak pernah mundur
 
 # Fee
 FEE_RATE = 0.0005           # 0.05% per leg, 0.1% round-trip
@@ -725,7 +726,7 @@ def live_open(orig_direction, score, sigs, price, atr, regime, bias, sym):
         "sl_price":       sl_price,
         # Trailing stop state
         "ts_active":      False,
-        "ts_price":       None,         # level trailing stop saat ini (hanya naik/turun ke arah profit)
+        "ts_price":       None,         # level trailing stop saat ini (hanya naik untuk LONG / turun untuk SHORT)
         # Simpan tp_price original hanya untuk logging
         "tp_price_orig":  tp_price,
         "sl_pct":         sl_pct,
@@ -813,24 +814,26 @@ def live_close(sym, reason, price=None):
 
 def monitor_positions():
     """
-    Untuk setiap posisi aktif:
-
-    Hard SL  : tetap di sl_price (0.4% dari entry), tidak bergerak.
+    Hard SL  : fixed di sl_price (max 0.4% dari entry), tidak pernah bergerak.
 
     Trailing Stop TP :
-      1. Belum aktif → aktif saat gross profit pertama kali >= TS_ACTIVATE_PCT (0.16%).
-         Saat aktif, ts_price = entry ± TS_LOCK_IN_PCT (0.15%) → mengunci profit.
-      2. Sudah aktif → update ts_peak ke harga terbaik saat ini.
-         ts_price baru = ts_peak ∓ TS_TRAIL_GAP_PCT (0.01%).
-         ts_price hanya boleh bergerak menguntungkan (naik untuk LONG, turun untuk SHORT).
-      3. Keluar jika harga menyentuh ts_price.
+      1. Belum aktif → aktif saat gross profit >= TS_ACTIVATE_PCT (0.16%).
+         Saat pertama aktif: ts_price = px * (1 - TS_GAP_PCT) untuk LONG
+                                       px * (1 + TS_GAP_PCT) untuk SHORT
+      2. Sudah aktif → setiap tick hitung candidate baru:
+           candidate_LONG  = px * (1 - TS_GAP_PCT)
+           candidate_SHORT = px * (1 + TS_GAP_PCT)
+         Update ts_price HANYA jika candidate lebih menguntungkan:
+           LONG  : ts_price = max(ts_price, candidate)   ← hanya naik
+           SHORT : ts_price = min(ts_price, candidate)   ← hanya turun
+      3. Keluar jika px <= ts_price (LONG) atau px >= ts_price (SHORT).
     """
     for sym in list(live_positions.keys()):
         pos = live_positions.get(sym)
         if pos is None or pos.get("_r"):
             continue
 
-        px   = price_live(sym)
+        px = price_live(sym)
         if px == 0:
             continue
 
@@ -838,7 +841,7 @@ def monitor_positions():
         entry    = pos["entry"]
         sl_price = pos["sl_price"]
 
-        # ── 1. Hard SL ─────────────────────────────────────────────────
+        # ── 1. Hard SL (fixed, tidak bergerak) ────────────────────────────
         if side == "LONG" and px <= sl_price:
             live_close(sym, "HardSL", px)
             continue
@@ -846,46 +849,37 @@ def monitor_positions():
             live_close(sym, "HardSL", px)
             continue
 
-        # ── 2. Trailing Stop TP ─────────────────────────────────────────
-        if side == "LONG":
-            gross_profit_pct = (px - entry) / entry
-        else:
-            gross_profit_pct = (entry - px) / entry
+        # ── 2. Trailing Stop TP ───────────────────────────────────────────
+        gross_profit_pct = (px - entry) / entry if side == "LONG" else (entry - px) / entry
 
         if not pos["ts_active"]:
-            # Cek apakah sudah menyentuh aktivasi
+            # Cek aktivasi
             if gross_profit_pct >= TS_ACTIVATE_PCT:
-                # Aktifkan trailing stop, set lock-in level
-                ts_price_init = (entry * (1 + TS_LOCK_IN_PCT)
-                                 if side == "LONG"
-                                 else entry * (1 - TS_LOCK_IN_PCT))
+                # Set trailing stop langsung dari harga sekarang - gap
+                if side == "LONG":
+                    ts_init = px * (1 - TS_GAP_PCT)
+                else:
+                    ts_init = px * (1 + TS_GAP_PCT)
                 pos["ts_active"] = True
-                pos["ts_peak"]   = px
-                pos["ts_price"]  = ts_price_init
+                pos["ts_price"]  = ts_init
                 print(f"  🎯 [TS AKTIF] {sym} {side} — profit +{gross_profit_pct*100:.3f}%"
-                      f" → Lock-in @ {ts_price_init:.6g} ({TS_LOCK_IN_PCT*100:.2f}% dari entry)")
+                      f" | px:{px:.6g} → stop:{ts_init:.6g} ({TS_GAP_PCT*100:.2f}% gap)")
         else:
-            # Update peak dan trailing stop
+            # Update trailing stop: candidate dari harga sekarang
             if side == "LONG":
-                if px > pos["ts_peak"]:
-                    pos["ts_peak"] = px
-                # Trail gap: stop = peak - gap
-                new_ts = pos["ts_peak"] * (1 - TS_TRAIL_GAP_PCT)
-                # Trailing stop hanya boleh naik (menguntungkan)
-                if new_ts > pos["ts_price"]:
-                    pos["ts_price"] = new_ts
+                candidate = px * (1 - TS_GAP_PCT)
+                # Hanya naik — tidak pernah turun
+                if candidate > pos["ts_price"]:
+                    pos["ts_price"] = candidate
                 # Cek exit
                 if px <= pos["ts_price"]:
                     live_close(sym, "TrailStop", px)
                     continue
             else:  # SHORT
-                if px < pos["ts_peak"]:
-                    pos["ts_peak"] = px
-                # Trail gap: stop = peak + gap
-                new_ts = pos["ts_peak"] * (1 + TS_TRAIL_GAP_PCT)
-                # Trailing stop hanya boleh turun (menguntungkan untuk SHORT)
-                if new_ts < pos["ts_price"]:
-                    pos["ts_price"] = new_ts
+                candidate = px * (1 + TS_GAP_PCT)
+                # Hanya turun — tidak pernah naik
+                if candidate < pos["ts_price"]:
+                    pos["ts_price"] = candidate
                 # Cek exit
                 if px >= pos["ts_price"]:
                     live_close(sym, "TrailStop", px)
@@ -983,7 +977,7 @@ def print_full():
     print(f"    💰 TrailTP:{_stats['trail_tp']} HardSL:{_stats['hard_sl']}")
     print(f"    📊 Learning: Global WR {learning.get_global_winrate():.1%}")
     print(f"    ⚙️  HardSL max:{MAX_SL_PCT*100:.1f}% | TrailActivate:+{TS_ACTIVATE_PCT*100:.2f}%"
-          f" | LockIn:+{TS_LOCK_IN_PCT*100:.2f}% | TrailGap:{TS_TRAIL_GAP_PCT*100:.2f}%")
+          f" | TrailGap:{TS_GAP_PCT*100:.2f}% dari harga saat ini")
     if trade_log:
         print(f"    📋 Last 5:")
         for t in trade_log[-5:]:
