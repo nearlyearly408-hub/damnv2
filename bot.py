@@ -1,9 +1,9 @@
 """
-Bot Scalping v20.0.1 — REVERSED LOGIC (CONTRARIAN)
+Bot Scalping v20.1.1 — REVERSED LOGIC (CONTRARIAN)
 ====================================================
 - Entry direction inverted (LONG <-> SHORT)
-- HardSL becomes TP, ExtremeTP becomes SL
-- Original loss becomes profit and vice versa
+- Fixed Risk Management: SL 0.5% / TP 0.3% (Net Fee Calculation)
+- Fast execution to prevent SL slippage
 """
 
 import os
@@ -35,30 +35,9 @@ LEVERAGE = 20
 ORDER_USDT = 2.0
 MAX_POSITIONS = 3
 
-# Risk Management (original multipliers, will be swapped in live_open)
-ATR_MULT_SL = 1.2      # original SL distance multiplier
-ATR_MULT_TP = 2.5      # original TP distance multiplier
-MIN_RR_RATIO = 1.8
-MAX_SL_PCT = 0.015
-MAX_TP_PCT = 0.04
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  SYMBOLS (sama seperti original)
-# ═══════════════════════════════════════════════════════════════════════════
-SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
-    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "TRXUSDT", "DOTUSDT",
-    "LINKUSDT", "MATICUSDT", "LTCUSDT", "ATOMUSDT", "UNIUSDT",
-    "NEARUSDT", "APTUSDT", "ARBUSDT", "OPUSDT", "INJUSDT",
-    "SUIUSDT", "SEIUSDT", "FETUSDT", "WLDUSDT", "AAVEUSDT",
-    "ORDIUSDT", "TONUSDT", "1000PEPEUSDT", "WIFUSDT", "JUPUSDT",
-    "FTMUSDT", "SANDUSDT", "MANAUSDT", "GALAUSDT", "APEUSDT",
-    "CRVUSDT", "1000SHIBUSDT", "COMPUSDT", "MKRUSDT", "SNXUSDT",
-]
-SYMBOLS = list(dict.fromkeys(SYMBOLS))
 # Scanning
 SCAN_INTERVAL = 2.0
-MONITOR_INT = 1.0
+MONITOR_INT = 0.1  # Dipercepat dari 1.0 ke 0.1 (100ms) untuk mencegah SL jebol
 BATCH_SIZE = 15
 MAX_WORKERS = 5
 SLOT_FILL_INT = 0.01
@@ -79,7 +58,22 @@ LEARNING_WINDOW = 200
 MIN_TRADES_FOR_WEIGHT = 20
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  MARKET REGIME DETECTION (tidak berubah)
+#  SYMBOLS
+# ═══════════════════════════════════════════════════════════════════════════
+SYMBOLS = [
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "TRXUSDT", "DOTUSDT",
+    "LINKUSDT", "MATICUSDT", "LTCUSDT", "ATOMUSDT", "UNIUSDT",
+    "NEARUSDT", "APTUSDT", "ARBUSDT", "OPUSDT", "INJUSDT",
+    "SUIUSDT", "SEIUSDT", "FETUSDT", "WLDUSDT", "AAVEUSDT",
+    "ORDIUSDT", "TONUSDT", "1000PEPEUSDT", "WIFUSDT", "JUPUSDT",
+    "FTMUSDT", "SANDUSDT", "MANAUSDT", "GALAUSDT", "APEUSDT",
+    "CRVUSDT", "1000SHIBUSDT", "COMPUSDT", "MKRUSDT", "SNXUSDT",
+]
+SYMBOLS = list(dict.fromkeys(SYMBOLS))
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  MARKET REGIME DETECTION
 # ═══════════════════════════════════════════════════════════════════════════
 
 class MarketRegime:
@@ -144,7 +138,7 @@ class MarketRegime:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  EXHAUSTION CONFIRMATION LAYER (tidak berubah)
+#  EXHAUSTION CONFIRMATION LAYER
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ExhaustionConfirmation:
@@ -157,13 +151,13 @@ class ExhaustionConfirmation:
         prev2 = df.iloc[-4]
         conditions = []
         reasons = []
-        # 1. RSI > 75
+        
         if row["rsi"] > 75:
             conditions.append(True)
             reasons.append(f"RSI_{row['rsi']:.0f}>75")
         else:
             conditions.append(False)
-        # 2. RSI Divergence
+            
         high_price = max(df["high"].iloc[-10:])
         high_rsi = max(df["rsi"].iloc[-10:])
         if row["close"] >= high_price * 0.99 and row["rsi"] < high_rsi - 3:
@@ -171,20 +165,20 @@ class ExhaustionConfirmation:
             reasons.append("RSI_Div")
         else:
             conditions.append(False)
-        # 3. MACD Divergence
+            
         high_macd = max(df["mh"].iloc[-10:])
         if row["close"] >= high_price * 0.99 and row["mh"] < high_macd - 0.5*row["atr"]:
             conditions.append(True)
             reasons.append("MACD_Div")
         else:
             conditions.append(False)
-        # 4. Volume Climax
+            
         if row["vr"] > 2.0:
             conditions.append(True)
             reasons.append(f"VolClimax_{row['vr']:.1f}x")
         else:
             conditions.append(False)
-        # 5. Delta Volume Climax
+            
         vol_ratio = row["vr"]
         vol_prev = prev["vr"] if not np.isnan(prev["vr"]) else 1
         if vol_ratio > 1.8 and vol_ratio > vol_prev * 1.2:
@@ -192,7 +186,7 @@ class ExhaustionConfirmation:
             reasons.append("DeltaVolClimax")
         else:
             conditions.append(False)
-        # 6. Long Upper Wick
+            
         body = abs(row["close"] - row["open"])
         upper_wick = row["high"] - max(row["close"], row["open"])
         if upper_wick > body * 1.5 and upper_wick > row["atr"] * 0.3:
@@ -200,7 +194,7 @@ class ExhaustionConfirmation:
             reasons.append("LongUpperWick")
         else:
             conditions.append(False)
-        # 7. ATR Expansion lalu Collapse
+            
         atr_series = df["atr"].iloc[-10:]
         atr_peak = atr_series.max()
         atr_now = row["atr"]
@@ -209,7 +203,7 @@ class ExhaustionConfirmation:
             reasons.append("ATR_ExpCollapse")
         else:
             conditions.append(False)
-        # 8. Momentum Deceleration
+            
         m5 = row["m5"]
         m5_prev = prev["m5"]
         if m5 > 0.002 and m5 < m5_prev * 0.7:
@@ -217,7 +211,7 @@ class ExhaustionConfirmation:
             reasons.append("MomDecel")
         else:
             conditions.append(False)
-        # 9. Orderflow Reversal
+            
         br = row["br"]
         br_peak = max(df["br"].iloc[-10:])
         if br < br_peak - 0.1 and br_peak > 0.6:
@@ -225,6 +219,7 @@ class ExhaustionConfirmation:
             reasons.append("OrderflowRev")
         else:
             conditions.append(False)
+            
         count = sum(conditions)
         return count >= 3, count, reasons
     
@@ -236,13 +231,13 @@ class ExhaustionConfirmation:
         prev = df.iloc[-3]
         conditions = []
         reasons = []
-        # 1. RSI < 25
+        
         if row["rsi"] < 25:
             conditions.append(True)
             reasons.append(f"RSI_{row['rsi']:.0f}<25")
         else:
             conditions.append(False)
-        # 2. RSI Divergence bullish
+            
         low_price = min(df["low"].iloc[-10:])
         low_rsi = min(df["rsi"].iloc[-10:])
         if row["close"] <= low_price * 1.01 and row["rsi"] > low_rsi + 3:
@@ -250,20 +245,20 @@ class ExhaustionConfirmation:
             reasons.append("RSI_Div_Bull")
         else:
             conditions.append(False)
-        # 3. MACD Divergence bullish
+            
         low_macd = min(df["mh"].iloc[-10:])
         if row["close"] <= low_price * 1.01 and row["mh"] > low_macd + 0.5*row["atr"]:
             conditions.append(True)
             reasons.append("MACD_Div_Bull")
         else:
             conditions.append(False)
-        # 4. Volume Climax
+            
         if row["vr"] > 2.0:
             conditions.append(True)
             reasons.append(f"VolClimax_{row['vr']:.1f}x")
         else:
             conditions.append(False)
-        # 5. Delta Volume Climax
+            
         vol_ratio = row["vr"]
         vol_prev = prev["vr"] if not np.isnan(prev["vr"]) else 1
         if vol_ratio > 1.8 and vol_ratio > vol_prev * 1.2:
@@ -271,7 +266,7 @@ class ExhaustionConfirmation:
             reasons.append("DeltaVolClimax")
         else:
             conditions.append(False)
-        # 6. Long Lower Wick
+            
         body = abs(row["close"] - row["open"])
         lower_wick = min(row["close"], row["open"]) - row["low"]
         if lower_wick > body * 1.5 and lower_wick > row["atr"] * 0.3:
@@ -279,7 +274,7 @@ class ExhaustionConfirmation:
             reasons.append("LongLowerWick")
         else:
             conditions.append(False)
-        # 7. ATR Expansion lalu Collapse
+            
         atr_series = df["atr"].iloc[-10:]
         atr_peak = atr_series.max()
         atr_now = row["atr"]
@@ -288,7 +283,7 @@ class ExhaustionConfirmation:
             reasons.append("ATR_ExpCollapse")
         else:
             conditions.append(False)
-        # 8. Momentum Deceleration
+            
         m5 = row["m5"]
         m5_prev = prev["m5"]
         if m5 < -0.002 and m5 > m5_prev * 0.7:
@@ -296,7 +291,7 @@ class ExhaustionConfirmation:
             reasons.append("MomDecel_Bull")
         else:
             conditions.append(False)
-        # 9. Orderflow Reversal
+            
         br = row["br"]
         br_trough = min(df["br"].iloc[-10:])
         if br > br_trough + 0.1 and br_trough < 0.4:
@@ -304,12 +299,13 @@ class ExhaustionConfirmation:
             reasons.append("OrderflowRev_Bull")
         else:
             conditions.append(False)
+            
         count = sum(conditions)
         return count >= 3, count, reasons
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  SELF-LEARNING SIGNAL WEIGHTING (tidak berubah)
+#  SELF-LEARNING SIGNAL WEIGHTING
 # ═══════════════════════════════════════════════════════════════════════════
 
 class SignalWeights:
@@ -350,7 +346,7 @@ class SignalWeights:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  SIGNAL SCORING (tidak berubah, direction asli)
+#  SIGNAL SCORING
 # ═══════════════════════════════════════════════════════════════════════════
 
 class SignalScorer:
@@ -532,54 +528,32 @@ class SignalScorer:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  RISK MANAGER (digunakan untuk menghitung level asli sebelum ditukar)
-# ═══════════════════════════════════════════════════════════════════════════
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  RISK MANAGER (Diperbarui untuk minimal TP 0.1% Net)
-# ═══════════════════════════════════════════════════════════════════════════
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  RISK MANAGER (FIXED MAX LOSS 0.5% & MIN PROFIT 0.5% NET)
+#  RISK MANAGER (FIXED MAX LOSS 0.5% & TP 0.3%)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class RiskManager:
     @staticmethod
-    def calculate_sl_tp(entry_price: float, atr: float, direction: str) -> Tuple[float, float, float, float]:
-        # --- REVERSED LOGIC MAPPING ---
-        # tp_distance -> akan dikonversi menjadi ACTUAL SL oleh fungsi live_open
-        # sl_distance -> akan dikonversi menjadi ACTUAL TP oleh fungsi live_open
+    def calculate_sl_tp(entry_price: float, actual_side: str) -> Tuple[float, float, float, float]:
+        # Fix 0.5% SL dan 0.3% TP murni dari pergerakan harga (sudah disesuaikan dengan perhitungan net fee)
+        sl_pct = 0.005  
+        tp_pct = 0.003  
 
-        # 1. ACTUAL SL (Maksimal Loss Fix)
-        # Fix 0.5% gross. Ditambah fee 0.1% (masuk & keluar), total net loss = 0.6%
-        tp_distance = entry_price * 0.005 
+        sl_distance = entry_price * sl_pct
+        tp_distance = entry_price * tp_pct
 
-        # 2. ACTUAL TP (Minimal Profit)
-        # Target gross minimal 0.6%. Dipotong fee 0.1%, total net profit minimal = 0.5%
-        min_tp_gross = entry_price * 0.006
-        
-        # Bot tetap bisa memanfaatkan ATR untuk TP jika market sedang trending kuat, 
-        # TAPI kita tahan agar tidak pernah kurang dari batas minimal 0.6% gross.
-        sl_distance = ATR_MULT_SL * atr
-        if sl_distance < min_tp_gross:
-            sl_distance = min_tp_gross
-
-        # Kalkulasi harga berdasarkan arah sinyal asli (sebelum di-reverse)
-        if direction == "LONG":
+        # Kalkulasi langsung berdasarkan arah posisi yang DIBUKA
+        if actual_side == "LONG":
             sl_price = entry_price - sl_distance
             tp_price = entry_price + tp_distance
-            sl_pct = sl_distance / entry_price
-            tp_pct = tp_distance / entry_price
         else: # SHORT
             sl_price = entry_price + sl_distance
             tp_price = entry_price - tp_distance
-            sl_pct = sl_distance / entry_price
-            tp_pct = tp_distance / entry_price
             
         return sl_price, tp_price, sl_pct, tp_pct
-    
+
+
 # ═══════════════════════════════════════════════════════════════════════════
-#  TRADE RECORDER & LEARNING LAYER (tidak berubah)
+#  TRADE RECORDER & LEARNING LAYER
 # ═══════════════════════════════════════════════════════════════════════════
 
 @dataclass
@@ -598,7 +572,6 @@ class TradeRecord:
     tp_pct: float
     hold_seconds: float
     timestamp: float = field(default_factory=time.time)
-
 
 class LearningLayer:
     def __init__(self, signal_weights: SignalWeights):
@@ -636,7 +609,7 @@ class LearningLayer:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  BOT STATE & UTILITIES (tidak berubah)
+#  BOT STATE & UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════
 
 _precision_cache = {}
@@ -760,16 +733,10 @@ scorer = SignalScorer(signal_weights)
 learning = LearningLayer(signal_weights)
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  CORE TRADING FUNCTIONS (dengan logika kebalikan)
+#  CORE TRADING FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════
 
 def live_open(orig_direction, score, sigs, price, atr, regime, bias, sym):
-    """
-    Membuka posisi dengan logika kebalikan:
-    - orig_direction adalah sinyal asli dari scorer (LONG/SHORT)
-    - Entry dibalik: jika orig_direction LONG → buka SHORT, jika SHORT → buka LONG
-    - HardSL (stop loss asli) menjadi TP, ExtremeTP (take profit asli) menjadi SL
-    """
     with _lock:
         if sym in live_positions or len(live_positions) >= MAX_POSITIONS:
             return
@@ -789,29 +756,11 @@ def live_open(orig_direction, score, sigs, price, atr, regime, bias, sym):
         with _lock: live_positions.pop(sym, None)
         return
     
-    # Hitung level SL/TP asli berdasarkan arah asli
-    sl_orig, tp_orig, sl_pct_orig, tp_pct_orig = RiskManager.calculate_sl_tp(price, atr, orig_direction)
-    
     # Tentukan arah yang sebenarnya dibuka (kebalikan dari asli)
-    if orig_direction == "LONG":
-        actual_side = "SHORT"
-        # Untuk SHORT, SL harus di atas entry, TP di bawah entry
-        # Gunakan level asli: tp_orig (awalnya di atas entry untuk LONG) menjadi SL (di atas entry)
-        # sl_orig (awalnya di bawah entry) menjadi TP (di bawah entry)
-        sl_price = tp_orig   # karena tp_orig > price
-        tp_price = sl_orig   # karena sl_orig < price
-    else:  # orig_direction == "SHORT"
-        actual_side = "LONG"
-        # Untuk LONG, SL di bawah entry, TP di atas entry
-        # tp_orig (awalnya di bawah entry untuk SHORT) menjadi SL (di bawah entry)
-        # sl_orig (awalnya di atas entry) menjadi TP (di atas entry)
-        sl_price = tp_orig   # tp_orig < price
-        tp_price = sl_orig   # sl_orig > price
-    
-    # Hitung persentase untuk logging
-    sl_pct = abs(sl_price - price) / price
-    tp_pct = abs(tp_price - price) / price
-    # Pastikan RR tetap >= MIN_RR_RATIO setelah swap (tidak wajib karena sudah dipenuhi asli)
+    actual_side = "SHORT" if orig_direction == "LONG" else "LONG"
+
+    # Langsung panggil RiskManager dengan arah aktual, hapus logika swap yang ribet
+    sl_price, tp_price, sl_pct, tp_pct = RiskManager.calculate_sl_tp(price, actual_side)
     
     pos = {
         "side": actual_side,
@@ -827,13 +776,13 @@ def live_open(orig_direction, score, sigs, price, atr, regime, bias, sym):
         "tp_pct": tp_pct,
         "regime": regime,
         "bias": bias,
-        "orig_direction": orig_direction   # simpan untuk referensi
+        "orig_direction": orig_direction
     }
     with _lock: live_positions[sym] = pos
     
     d = "🟢" if actual_side == "LONG" else "🔴"
     print(f"\n  {d} [REVERSED] {sym} {actual_side} (orig {orig_direction}) @{price:.6g} | SL:{sl_pct*100:.2f}% TP:{tp_pct*100:.2f}% | Regime:{regime}")
-    print(f"       Original signals: {' | '.join(sigs[:5])}")
+    print(f"        Original signals: {' | '.join(sigs[:5])}")
     _stats["trades"] += 1
 
 def live_close(sym, reason, price=None):
@@ -898,17 +847,17 @@ def monitor_positions():
         tp_px = pos["tp_price"]
         if side == "LONG":
             if px <= sl_px:
-                live_close(sym, "HardSL", px); continue
+                live_close(sym, "SL", px); continue
             if px >= tp_px:
-                live_close(sym, "ExtremeTP", px); continue
+                live_close(sym, "TP", px); continue
         else:
             if px >= sl_px:
-                live_close(sym, "HardSL", px); continue
+                live_close(sym, "SL", px); continue
             if px <= tp_px:
-                live_close(sym, "ExtremeTP", px); continue
+                live_close(sym, "TP", px); continue
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  SCANNER THREAD (tidak berubah)
+#  SCANNER THREAD
 # ═══════════════════════════════════════════════════════════════════════════
 
 def scan_one(sym):
@@ -948,6 +897,7 @@ def run_ta(df):
         df["rng"] = df["high"] - df["low"]
         df["br2"] = df["body"] / df["rng"].replace(0, 1)
         df["m5"] = (df["close"] - df["close"].shift(5)) / df["close"].shift(5)
+        df["m3"] = (df["close"] - df["close"].shift(3)) / df["close"].shift(3)
     return df
 
 def scan_batch(syms):
@@ -972,8 +922,8 @@ def print_inline():
     n = _stats["wins"] + _stats["losses"]
     wr = _stats["wins"] / n * 100 if n else 0
     pnl, e = _stats["pnl"], "💚" if _stats["pnl"] >= 0 else "🔴"
-    print(f"       ┌ [v20.1 REVERSED] {n}T WR:{wr:.0f}% W:{_stats['wins']} L:{_stats['losses']} {e}PnL:{pnl:+.4f}U")
-    print(f"       └ ExTP:{_stats['extreme_tp']} HardSL:{_stats['hard_sl']} | Regime WR: {learning.get_winrate_by_regime('TRENDING_BULL'):.0%}")
+    print(f"       ┌ [v20.1.1 REVERSED] {n}T WR:{wr:.0f}% W:{_stats['wins']} L:{_stats['losses']} {e}PnL:{pnl:+.4f}U")
+    print(f"       └ TP:{_stats['extreme_tp']} SL:{_stats['hard_sl']} | Regime WR: {learning.get_winrate_by_regime('TRENDING_BULL'):.0%}")
 
 def print_full():
     n = _stats["wins"] + _stats["losses"]
@@ -983,12 +933,12 @@ def print_full():
     tph = n / sess if sess > 0 else 0
     e = "💚" if pnl >= 0 else "🔴"
     print(f"\n  {'─'*70}")
-    print(f"    ✅ REVERSED LOGIC v20.1 — CONTRARIAN ADAPTIVE TRADING")
+    print(f"    ✅ REVERSED LOGIC v20.1.1 — CONTRARIAN ADAPTIVE TRADING")
     print(f"    🎯 {n}T WR:{wr:.0f}% W:{_stats['wins']} L:{_stats['losses']} ({tph:.1f}T/hr)")
     print(f"    {e} PnL Net:{pnl:+.5f}U Best:{_stats['best']:+.5f} Worst:{_stats['worst']:+.5f}")
-    print(f"    💰 ExtremeTP:{_stats['extreme_tp']} HardSL:{_stats['hard_sl']}")
+    print(f"    💰 TP:{_stats['extreme_tp']} SL:{_stats['hard_sl']}")
     print(f"    📊 Learning: Global WR {learning.get_global_winrate():.1%}")
-    print(f"    ⚙️  TP/SL: SWAPPED (HardSL<->ExtremeTP) + Direction Reversed")
+    print(f"    ⚙️  Risk: STRICT 0.5% SL | 0.3% TP")
     if trade_log:
         print(f"    📋 Last 5:")
         for t in trade_log[-5:]:
@@ -1033,7 +983,6 @@ def t_slot_filler(syms):
                 for r in res[:slots]:
                     if len(live_positions) >= MAX_POSITIONS: break
                     sym, orig_dir, sc, sg, px, atr, regime, bias = r
-                    # Panggil live_open dengan orig_dir asli, fungsi akan membalik otomatis
                     live_open(orig_dir, sc, sg, px, atr, regime, bias, sym)
         except: pass
         time.sleep(SLOT_FILL_INT)
@@ -1072,10 +1021,10 @@ def t_macro():
 
 def run_bot():
     print("╔════════════════════════════════════════════════════════════════════╗")
-    print("║  ✅ REVERSED LOGIC v20.1 — CONTRARIAN ADAPTIVE TRADING ENGINE     ║")
-    print("║  ✅ Entry dibalik (LONG<->SHORT)                                 ║")
-    print("║  ✅ HardSL menjadi TP, ExtremeTP menjadi SL                       ║")
-    print("║  ✅ Loss asli berubah jadi profit dan sebaliknya                  ║")
+    print("║  ✅ REVERSED LOGIC v20.1.1 — CONTRARIAN ADAPTIVE TRADING ENGINE    ║")
+    print("║  ✅ Entry dibalik (LONG<->SHORT)                                   ║")
+    print("║  ✅ STRICT SL: 0.5% | TP: 0.3% (Net Fee Adjusted)                  ║")
+    print("║  ✅ Fast Execution Enabled (100ms)                                 ║")
     print("╚════════════════════════════════════════════════════════════════════╝")
     try:
         valid = {s["symbol"] for s in client.futures_exchange_info()["symbols"] if s["status"] == "TRADING"}
