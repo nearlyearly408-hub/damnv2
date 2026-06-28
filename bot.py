@@ -1,7 +1,7 @@
 """
-Bot Scalping v20.1.3 — ORIGINAL LOGIC RESTORED
+Bot Scalping v20.2 — STANDARD LOGIC
 ====================================================
-- Entry direction restored to normal (LONG = LONG, SHORT = SHORT)
+- Entry direction: ORIGINAL (Follow signals directly)
 - Fixed Risk Management: TP 0.3% / SL 0.4%
 - Fast execution to prevent SL slippage
 """
@@ -37,7 +37,7 @@ MAX_POSITIONS = 3
 
 # Scanning
 SCAN_INTERVAL = 2.0
-MONITOR_INT = 0.1  # Eksekusi cepat (100ms)
+MONITOR_INT = 0.1  # Eksekusi cepat (100ms) untuk mencegah SL jebol
 BATCH_SIZE = 15
 MAX_WORKERS = 5
 SLOT_FILL_INT = 0.01
@@ -528,22 +528,20 @@ class SignalScorer:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  RISK MANAGER (TP 0.3% & SL 0.4%)
+#  RISK MANAGER (FIXED MAX LOSS 0.4% & TP 0.3%)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class RiskManager:
     @staticmethod
     def calculate_sl_tp(entry_price: float, actual_side: str) -> Tuple[float, float, float, float]:
-        # --- TP & SL DIUBAH SESUAI PERINTAH TERBARU ---
-        # TP 0.3%
-        # SL 0.4%
+        # Logika normal: SL = 0.4% dan TP = 0.3%
         sl_pct = 0.004  
         tp_pct = 0.003  
 
         sl_distance = entry_price * sl_pct
         tp_distance = entry_price * tp_pct
 
-        # Kalkulasi langsung berdasarkan arah posisi yang DIBUKA
+        # Kalkulasi standar sesuai arah posisi (Tidak dibalik)
         if actual_side == "LONG":
             sl_price = entry_price - sl_distance
             tp_price = entry_price + tp_distance
@@ -758,10 +756,10 @@ def live_open(orig_direction, score, sigs, price, atr, regime, bias, sym):
         with _lock: live_positions.pop(sym, None)
         return
     
-    # --- LOGIKA ENTRY DIKEMBALIKAN KE ASLI (TIDAK DIBALIK) ---
+    # Tentukan arah yang sebenarnya dibuka (Kembali ke NORMAL sesuai sinyal)
     actual_side = orig_direction
 
-    # Langsung panggil RiskManager dengan arah aktual
+    # Langsung panggil RiskManager
     sl_price, tp_price, sl_pct, tp_pct = RiskManager.calculate_sl_tp(price, actual_side)
     
     pos = {
@@ -783,7 +781,7 @@ def live_open(orig_direction, score, sigs, price, atr, regime, bias, sym):
     with _lock: live_positions[sym] = pos
     
     d = "🟢" if actual_side == "LONG" else "🔴"
-    print(f"\n  {d} [NORMAL LOGIC] {sym} {actual_side} @{price:.6g} | SL:{sl_pct*100:.2f}% TP:{tp_pct*100:.2f}% | Regime:{regime}")
+    print(f"\n  {d} [STANDARD] {sym} {actual_side} @{price:.6g} | SL:{sl_pct*100:.2f}% TP:{tp_pct*100:.2f}% | Regime:{regime}")
     print(f"        Original signals: {' | '.join(sigs[:5])}")
     _stats["trades"] += 1
 
@@ -805,7 +803,7 @@ def live_close(sym, reason, price=None):
     won = pnl >= 0
     e = "🟢" if won else "🔴"
     
-    print(f"  {e} [NORMAL LOGIC] {sym} {side} CLOSE — {reason}")
+    print(f"  {e} [STANDARD] {sym} {side} CLOSE — {reason}")
     print(f"     {entry:.6g}→{price:.6g} ({pct:+.3f}%) hold:{hold:.0f}s | PnL:{pnl:+.5f}U")
     
     trade = TradeRecord(
@@ -924,7 +922,7 @@ def print_inline():
     n = _stats["wins"] + _stats["losses"]
     wr = _stats["wins"] / n * 100 if n else 0
     pnl, e = _stats["pnl"], "💚" if _stats["pnl"] >= 0 else "🔴"
-    print(f"       ┌ [v20.1.3 NORMAL LOGIC] {n}T WR:{wr:.0f}% W:{_stats['wins']} L:{_stats['losses']} {e}PnL:{pnl:+.4f}U")
+    print(f"       ┌ [v20.2 STANDARD] {n}T WR:{wr:.0f}% W:{_stats['wins']} L:{_stats['losses']} {e}PnL:{pnl:+.4f}U")
     print(f"       └ TP:{_stats['extreme_tp']} SL:{_stats['hard_sl']} | Regime WR: {learning.get_winrate_by_regime('TRENDING_BULL'):.0%}")
 
 def print_full():
@@ -935,12 +933,12 @@ def print_full():
     tph = n / sess if sess > 0 else 0
     e = "💚" if pnl >= 0 else "🔴"
     print(f"\n  {'─'*70}")
-    print(f"    ✅ NORMAL LOGIC v20.1.3 — ADAPTIVE TRADING")
+    print(f"    ✅ STANDARD LOGIC v20.2 — ADAPTIVE TRADING")
     print(f"    🎯 {n}T WR:{wr:.0f}% W:{_stats['wins']} L:{_stats['losses']} ({tph:.1f}T/hr)")
     print(f"    {e} PnL Net:{pnl:+.5f}U Best:{_stats['best']:+.5f} Worst:{_stats['worst']:+.5f}")
     print(f"    💰 TP:{_stats['extreme_tp']} SL:{_stats['hard_sl']}")
     print(f"    📊 Learning: Global WR {learning.get_global_winrate():.1%}")
-    print(f"    ⚙️  Risk: STRICT TP 0.3% | SL 0.4%")
+    print(f"    ⚙️  Risk: STRICT 0.4% SL | 0.3% TP")
     if trade_log:
         print(f"    📋 Last 5:")
         for t in trade_log[-5:]:
@@ -1023,9 +1021,9 @@ def t_macro():
 
 def run_bot():
     print("╔════════════════════════════════════════════════════════════════════╗")
-    print("║  ✅ NORMAL LOGIC v20.1.3 — ADAPTIVE TRADING ENGINE                 ║")
-    print("║  ✅ Entry Restored (LONG = LONG | SHORT = SHORT)                   ║")
-    print("║  ✅ STRICT TP: 0.3% | SL: 0.4%                                     ║")
+    print("║  ✅ STANDARD LOGIC v20.2 — ADAPTIVE TRADING ENGINE                 ║")
+    print("║  ✅ Entry Normal (Sesuai Sinyal Asli)                              ║")
+    print("║  ✅ STRICT SL: 0.4% | TP: 0.3%                                     ║")
     print("║  ✅ Fast Execution Enabled (100ms)                                 ║")
     print("╚════════════════════════════════════════════════════════════════════╝")
     try:
@@ -1051,7 +1049,7 @@ def run_bot():
         elif slots == 0:
             print(f"  ✅ Slots full")
         else:
-            print(f"  🔍 {slots} slot kosong — Adaptive scanning...")
+            print(f"  🔍 {slots} slot kosong — Adaptive scanning (STANDARD)...")
         if cycle % 30 == 0:
             print_full()
         time.sleep(SCAN_INTERVAL)
