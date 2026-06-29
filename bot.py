@@ -1,8 +1,8 @@
 """
-Bot Scalping v20.2 — STANDARD LOGIC
+Bot Scalping v20.2.1 — STANDARD LOGIC
 ====================================================
 - Entry direction: ORIGINAL (Follow signals directly)
-- Fixed Risk Management: TP 0.3% / SL 0.4%
+- Fixed Risk Management: TP 0.45% / SL 0.3% (Optimized for 55% WR)
 - Fast execution to prevent SL slippage
 """
 
@@ -528,15 +528,15 @@ class SignalScorer:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  RISK MANAGER (FIXED MAX LOSS 0.4% & TP 0.3%)
+#  RISK MANAGER (FIXED MAX LOSS 0.3% & TP 0.45%)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class RiskManager:
     @staticmethod
     def calculate_sl_tp(entry_price: float, actual_side: str) -> Tuple[float, float, float, float]:
-        # Logika normal: SL = 0.4% dan TP = 0.3%
-        sl_pct = 0.004  
-        tp_pct = 0.003  
+        # Logika RRR baru: SL = 0.3% dan TP = 0.45%
+        sl_pct = 0.003  
+        tp_pct = 0.0045  
 
         sl_distance = entry_price * sl_pct
         tp_distance = entry_price * tp_pct
@@ -922,7 +922,7 @@ def print_inline():
     n = _stats["wins"] + _stats["losses"]
     wr = _stats["wins"] / n * 100 if n else 0
     pnl, e = _stats["pnl"], "💚" if _stats["pnl"] >= 0 else "🔴"
-    print(f"       ┌ [v20.2 STANDARD] {n}T WR:{wr:.0f}% W:{_stats['wins']} L:{_stats['losses']} {e}PnL:{pnl:+.4f}U")
+    print(f"       ┌ [v20.2.1 STANDARD] {n}T WR:{wr:.0f}% W:{_stats['wins']} L:{_stats['losses']} {e}PnL:{pnl:+.4f}U")
     print(f"       └ TP:{_stats['extreme_tp']} SL:{_stats['hard_sl']} | Regime WR: {learning.get_winrate_by_regime('TRENDING_BULL'):.0%}")
 
 def print_full():
@@ -933,12 +933,12 @@ def print_full():
     tph = n / sess if sess > 0 else 0
     e = "💚" if pnl >= 0 else "🔴"
     print(f"\n  {'─'*70}")
-    print(f"    ✅ STANDARD LOGIC v20.2 — ADAPTIVE TRADING")
+    print(f"    ✅ STANDARD LOGIC v20.2.1 — ADAPTIVE TRADING")
     print(f"    🎯 {n}T WR:{wr:.0f}% W:{_stats['wins']} L:{_stats['losses']} ({tph:.1f}T/hr)")
     print(f"    {e} PnL Net:{pnl:+.5f}U Best:{_stats['best']:+.5f} Worst:{_stats['worst']:+.5f}")
     print(f"    💰 TP:{_stats['extreme_tp']} SL:{_stats['hard_sl']}")
     print(f"    📊 Learning: Global WR {learning.get_global_winrate():.1%}")
-    print(f"    ⚙️  Risk: STRICT 0.4% SL | 0.3% TP")
+    print(f"    ⚙️  Risk: STRICT 0.3% SL | 0.45% TP")
     if trade_log:
         print(f"    📋 Last 5:")
         for t in trade_log[-5:]:
@@ -1021,9 +1021,9 @@ def t_macro():
 
 def run_bot():
     print("╔════════════════════════════════════════════════════════════════════╗")
-    print("║  ✅ STANDARD LOGIC v20.2 — ADAPTIVE TRADING ENGINE                 ║")
+    print("║  ✅ STANDARD LOGIC v20.2.1 — ADAPTIVE TRADING ENGINE               ║")
     print("║  ✅ Entry Normal (Sesuai Sinyal Asli)                              ║")
-    print("║  ✅ STRICT SL: 0.4% | TP: 0.3%                                     ║")
+    print("║  ✅ STRICT SL: 0.3% | TP: 0.45% (Optimized for 55% WR)             ║")
     print("║  ✅ Fast Execution Enabled (100ms)                                 ║")
     print("╚════════════════════════════════════════════════════════════════════╝")
     try:
