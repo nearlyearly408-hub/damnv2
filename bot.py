@@ -1,22 +1,27 @@
 """
-Bot Scalping v20.4 — TRAILING STOP
+Bot Scalping v20.5 — TRAILING STOP (TUNED)
 ====================================================
-Masalah v20.2 & v20.3: fixed TP membatasi winner, sedangkan loss tetap besar.
-Trailing stop membuat distribusi P&L ASIMETRIS:
-  - Loss  : selalu  -0.16U (SL 0.3% fixed)
-  - Win   : variabel +0.04U → +0.48U+ (tergantung seberapa jauh harga lari)
+Perubahan dari v20.4:
 
-Parameter trail (tunable di bagian CONFIGURATION):
-  SL_PCT            = 0.3%   hard stop, tidak pernah bergerak
-  TRAIL_ACTIVATE_PCT= 0.4%   trailing aktif setelah profit 0.4%
-  TRAIL_GAP_PCT     = 0.2%   trail 0.2% di bawah/atas peak
-  EMERGENCY_TP_PCT  = 2.0%   safety net agar posisi tidak terbuka selamanya
+1. TRAIL_ACTIVATE_PCT  0.4% → 0.3%  (sama dengan SL)
+   Efek: trades yang peak 0.3-0.4% lalu balik ke SL sebelumnya (-0.16U)
+         sekarang kena trail stop di ~0.1% profit → net ≈ 0.00U (breakeven)
+         WR naik sedikit, avg win turun sedikit — net effect: mengurangi losses
+
+2. Blokir RANGE + VOLATILE regime untuk entry
+   Kenapa: di regime ranging/volatile, harga jarang lari jauh sebelum balik.
+   Avg peak di RANGE ≈ 0.3-0.5% (tidak cukup untuk trail). Di TRENDING, price
+   cenderung lari lebih jauh → avg peak lebih tinggi → trail lebih profitable.
+   Trade-off: frekuensi trade berkurang, tapi kualitas lebih baik.
+
+3. Tracking avg_peak per trade (ditampilkan di print_full)
+   Metrik paling penting: avg peak saat WIN harus > 0.81% agar profitable.
+   Pantau ini untuk tahu apakah sinyal menghasilkan runs yang cukup panjang.
 
 Math (notional 40 USDT, fee round-trip 0.04 USDT):
-  BEP WR dengan avg win +0.16U  = 50.0%   (sama saja dengan fixed TP)
-  BEP WR dengan avg win +0.24U  = 44.4%   (sudah profitable di WR 41%)
-  BEP WR dengan avg win +0.28U  = 36.4%   (margin lebar)
-  → Trail mulai berguna saat harga lari rata-rata 0.876%+ sebelum balik
+  Hard SL loss  : -0.16U (fixed)
+  Trail min exit: trail aktif di 0.3%, stop di 0.1% → net ≈ 0.00U (breakeven)
+  Avg win yg dibutuhkan untuk BEP di WR 44% : +0.204U (avg peak > 0.81%)
 """
 
 import os
@@ -61,9 +66,11 @@ TTL_5M         = 2
 
 # ── Risk Management v20.4 (trailing stop) ─────────────────────────────────
 SL_PCT             = 0.003   # 0.3%  hard stop — tidak bergerak setelah entry
-TRAIL_ACTIVATE_PCT = 0.004   # 0.4%  profit minimum untuk aktifkan trailing
+TRAIL_ACTIVATE_PCT = 0.003   # 0.3%  sama dengan SL — trail aktif sejak profit = SL
 TRAIL_GAP_PCT      = 0.002   # 0.2%  gap dari peak ke trailing stop
 EMERGENCY_TP_PCT   = 0.020   # 2.0%  safety net (posisi tidak terbuka selamanya)
+# → Saat trail aktif pertama kali: stop di 0.1% profit → net ≈ 0.00U (breakeven)
+# → Trades yang peak 0.3-0.4% lalu balik: dulu -0.16U, sekarang ~0.00U
 # ──────────────────────────────────────────────────────────────────────────
 
 # Kill Switch
@@ -334,13 +341,14 @@ class SignalScorer:
             return None, max(long_score, short_score), [], atr, 0, 0, regime, bias
 
         elif regime == MarketRegime.REGIME_RANGE:
-            if short_score > long_score and short_score >= MIN_SCORE and ex_short:
-                return "SHORT", short_score, short_sigs + er_short, atr, 0, 0, regime, bias
-            if long_score > short_score and long_score >= MIN_SCORE and ex_long:
-                return "LONG", long_score, long_sigs + er_long, atr, 0, 0, regime, bias
+            # v20.5: RANGE DIBLOKIR
+            # Avg peak di RANGE terlalu pendek (0.3-0.5%) untuk trailing stop.
+            # Dibutuhkan avg peak > 0.81% agar profitable → only take trending markets.
+            _stats["regime_block"] += 1
             return None, max(long_score, short_score), [], atr, 0, 0, regime, bias
 
         elif regime == MarketRegime.REGIME_EXHAUSTION:
+            # EXHAUSTION tetap diizinkan: syarat ketat (3+ konfirmasi exhaustion)
             if short_score > long_score and short_score >= MIN_SCORE and ec_short >= 2:
                 return "SHORT", short_score, short_sigs + er_short, atr, 0, 0, regime, bias
             if long_score > short_score and long_score >= MIN_SCORE and ec_long >= 2:
@@ -348,10 +356,9 @@ class SignalScorer:
             return None, max(long_score, short_score), [], atr, 0, 0, regime, bias
 
         elif regime == MarketRegime.REGIME_VOLATILE:
-            if short_score > long_score and short_score >= MIN_SCORE + 10 and ex_short:
-                return "SHORT", short_score, short_sigs + er_short, atr, 0, 0, regime, bias
-            if long_score > short_score and long_score >= MIN_SCORE + 10 and ex_long:
-                return "LONG", long_score, long_sigs + er_long, atr, 0, 0, regime, bias
+            # v20.5: VOLATILE DIBLOKIR
+            # Choppy price action → trail stop kena terlalu cepat → avg win kecil.
+            _stats["regime_block"] += 1
             return None, max(long_score, short_score), [], atr, 0, 0, regime, bias
 
         return None, 0, [], atr, 0, 0, regime, bias
@@ -475,6 +482,7 @@ class TradeRecord:
     atr_entry:    float
     hold_seconds: float
     exit_reason:  str
+    peak_pct:     float   # max favorable % move selama trade berlangsung
     timestamp:    float = field(default_factory=time.time)
 
 class LearningLayer:
@@ -509,6 +517,17 @@ class LearningLayer:
         losses = [abs(t.pnl) for t in self.trades if not t.won]
         return sum(losses) / len(losses) if losses else 0.0
 
+    def avg_peak_win(self) -> float:
+        """Rata-rata pergerakan harga favorable (%) saat trade berakhir WIN.
+        Metrik kunci: harus > 0.81% agar profitable dengan WR 44%."""
+        peaks = [t.peak_pct for t in self.trades if t.won]
+        return sum(peaks) / len(peaks) if peaks else 0.0
+
+    def avg_peak_all(self) -> float:
+        """Rata-rata peak untuk SEMUA trade (termasuk yang kena SL)."""
+        peaks = [t.peak_pct for t in self.trades]
+        return sum(peaks) / len(peaks) if peaks else 0.0
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  BOT STATE & UTILITIES
@@ -528,6 +547,7 @@ _ks    = {"active": False, "reason": "", "resume": 0, "consec": 0, "daily": 0.0,
 _stats = {
     "trades": 0, "wins": 0, "losses": 0, "pnl": 0.0, "best": 0.0, "worst": 0.0,
     "trail_exit": 0, "hard_sl": 0, "emg_tp": 0,
+    "regime_block": 0,  # jumlah sinyal yang diblokir karena RANGE/VOLATILE
     "hist": deque(maxlen=200), "start": time.time(),
 }
 
@@ -699,14 +719,15 @@ def live_close(sym, reason, price=None):
     won        = pnl >= 0
     e          = "🟢" if won else "🔴"
 
-    # Trail info untuk log
-    trail_info = ""
-    if pos.get("trail_active"):
-        peak     = pos["peak_price"]
-        peak_pct = (peak - entry) / entry * 100 if side == "LONG" else (entry - peak) / entry * 100
-        trail_info = f" | peak:{peak_pct:+.3f}%"
+    # Hitung peak favorable move
+    peak_px  = pos.get("peak_price", entry)
+    peak_pct = (peak_px - entry) / entry if side == "LONG" else (entry - peak_px) / entry
 
-    print(f"  {e} [TRAIL] {sym} {side} CLOSE — {reason}{trail_info}")
+    trail_info = f" | peak:{peak_pct*100:+.3f}%"
+    if pos.get("trail_active"):
+        trail_info += " ✅trail_was_active"
+
+    print(f"  {e} [v20.5] {sym} {side} CLOSE — {reason}{trail_info}")
     print(f"     {entry:.6g}→{price:.6g} ({pct:+.3f}%) hold:{hold:.0f}s | PnL:{pnl:+.5f}U")
 
     trade = TradeRecord(
@@ -714,6 +735,7 @@ def live_close(sym, reason, price=None):
         pnl=pnl, won=won, regime=pos.get("regime", "UNKNOWN"),
         signals=pos.get("sigs", []), score=pos.get("score", 0),
         atr_entry=pos.get("atr", 0), hold_seconds=hold, exit_reason=reason,
+        peak_pct=peak_pct,
     )
     learning.add_trade(trade)
 
@@ -873,8 +895,8 @@ def print_inline():
     pnl = _stats["pnl"]
     aw  = learning.avg_win()
     e   = "💚" if pnl >= 0 else "🔴"
-    print(f"       ┌ [v20.4 TRAIL] {n}T WR:{wr:.0f}% W:{_stats['wins']} L:{_stats['losses']} {e}PnL:{pnl:+.4f}U")
-    print(f"       └ Trail:{_stats['trail_exit']} SL:{_stats['hard_sl']} EmgTP:{_stats['emg_tp']} | AvgWin:{aw:+.4f}U")
+    print(f"       ┌ [v20.5] {n}T WR:{wr:.0f}% W:{_stats['wins']} L:{_stats['losses']} {e}PnL:{pnl:+.4f}U")
+    print(f"       └ Trail:{_stats['trail_exit']} SL:{_stats['hard_sl']} Blocked:{_stats['regime_block']} | AvgWin:{aw:+.4f}U")
 
 def print_full():
     n    = _stats["wins"] + _stats["losses"]
@@ -885,16 +907,27 @@ def print_full():
     e    = "💚" if pnl >= 0 else "🔴"
     aw   = learning.avg_win()
     al   = learning.avg_loss()
-    # Hitung breakeven WR berdasarkan avg win aktual
     bep  = al / (al + aw) * 100 if (al + aw) > 0 else 50
+
+    # Metrik kunci: avg peak vs yang dibutuhkan
+    notional     = ORDER_USDT * LEVERAGE
+    fee_rt       = notional * 0.001
+    needed_aw    = (1 - wr/100) * al / (wr/100) if wr > 0 else 0
+    needed_peak  = (needed_aw + fee_rt) / notional + TRAIL_GAP_PCT
+    avg_pk_win   = learning.avg_peak_win()
+    peak_gap     = avg_pk_win - needed_peak
+    peak_status  = "✅ CUKUP" if peak_gap >= 0 else f"❌ KURANG {abs(peak_gap)*100:.3f}%"
+
     print(f"\n  {'─'*70}")
-    print(f"    ✅ TRAIL v20.4 — ADAPTIVE TRAILING STOP ENGINE")
+    print(f"    🔔 TRAIL v20.5 — TRAILING STOP (TUNED)")
     print(f"    🎯 {n}T WR:{wr:.0f}% W:{_stats['wins']} L:{_stats['losses']} ({tph:.1f}T/hr)")
     print(f"    {e} PnL Net:{pnl:+.5f}U Best:{_stats['best']:+.5f} Worst:{_stats['worst']:+.5f}")
     print(f"    📈 Exit: Trail:{_stats['trail_exit']} | SL:{_stats['hard_sl']} | EmgTP:{_stats['emg_tp']}")
+    print(f"    🚫 Regime diblokir: {_stats['regime_block']} sinyal (RANGE+VOLATILE)")
     print(f"    💰 Avg Win:{aw:+.5f}U | Avg Loss:{-al:+.5f}U | BEP WR:{bep:.1f}%")
     print(f"    📊 Global WR:{learning.get_global_winrate():.1%}")
-    print(f"    ⚙️  SL:{SL_PCT*100:.2f}% | Trail aktif@{TRAIL_ACTIVATE_PCT*100:.2f}% gap:{TRAIL_GAP_PCT*100:.2f}% | EmgTP:{EMERGENCY_TP_PCT*100:.0f}%")
+    print(f"    ⚙️  SL:{SL_PCT*100:.2f}% | Trail aktif@{TRAIL_ACTIVATE_PCT*100:.2f}% gap:{TRAIL_GAP_PCT*100:.2f}%")
+    print(f"    📏 Avg Peak(wins):{avg_pk_win*100:.3f}% | Butuh:{needed_peak*100:.3f}% | {peak_status}")
     if trade_log:
         print(f"    📋 Last 5:")
         for t in trade_log[-5:]:
@@ -976,12 +1009,11 @@ def t_macro():
 
 def run_bot():
     print("╔════════════════════════════════════════════════════════════════════╗")
-    print("║  🔔 TRAIL v20.4 — ADAPTIVE TRAILING STOP ENGINE                    ║")
-    print("║  ✅ Entry Normal (Sesuai Sinyal Asli)                              ║")
-    print(f"║  ✅ Hard SL: {SL_PCT*100:.2f}% (fixed)                                       ║")
-    print(f"║  ✅ Trail: aktif setelah +{TRAIL_ACTIVATE_PCT*100:.2f}%, gap {TRAIL_GAP_PCT*100:.2f}% dari peak         ║")
-    print(f"║  ✅ Emergency TP: {EMERGENCY_TP_PCT*100:.0f}% (safety net)                            ║")
-    print("║  ✅ Loss: fixed -0.16U | Win: variabel (uncapped)                  ║")
+    print("║  🔔 TRAIL v20.5 — TRAILING STOP (TUNED)                            ║")
+    print(f"║  ✅ Hard SL: {SL_PCT*100:.2f}% | Trail aktif@{TRAIL_ACTIVATE_PCT*100:.2f}% gap:{TRAIL_GAP_PCT*100:.2f}% | EmgTP:{EMERGENCY_TP_PCT*100:.0f}%  ║")
+    print("║  ✅ RANGE + VOLATILE regime DIBLOKIR (avg peak terlalu pendek)     ║")
+    print("║  ✅ Hanya entry di TRENDING + EXHAUSTION regime                    ║")
+    print("║  ✅ Tracking avg_peak — pantau > 0.81% untuk profitable            ║")
     print("╚════════════════════════════════════════════════════════════════════╝")
     try:
         valid = {s["symbol"] for s in client.futures_exchange_info()["symbols"] if s["status"] == "TRADING"}
